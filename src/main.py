@@ -18,13 +18,16 @@ SAMPLE_SPREADSHEET_ID = "1ND3SnMHpbFYeNjvU9gDNIuCP3a2-Q_xzxbtyl18V_8s"
 SAMPLE_RANGE_NAME = "ubuntu2004!A2:P"
 
 
+def call_request(url):
+    return rq.get(url, auth=(username, token))
+
 def get_api_url(url):
     url_parts = url.split("/")
     return "https://api.github.com/repos/" + url_parts[-2] + "/" + url_parts[-1]
 
 
 def get_contributers_number(url):
-    r = rq.get(url + "/contributors")
+    r = call_request(url + "/contributors")
     return len(r.json())
 
 
@@ -32,19 +35,22 @@ def get_last_pr_update(url):
     open_pr_date = date(1900, 1, 1)
     closed_pr_date = date(1900, 1, 1)
 
-    r1 = rq.get(url)
-    r2 = rq.get(url + "?per_page=1&state=closed")
-    print(url + "?per_page=1&state=closed")
+    r1 = call_request(url)
+    r1.raise_for_status()
+    r2 = call_request(url + '?per_page=1&state=close')
+    r2.raise_for_status()
 
     try:
         # 'open' PR
-        open_pr_date = dt.strptime(r1.json()[0]["created_at"], "%Y-%m-%dT%H:%M:%S%z").date()
+        open_pr_date = dt.strptime(
+            r1.json()[0]["created_at"], "%Y-%m-%dT%H:%M:%S%z").date()
     except IndexError:
         pass
 
     try:
         # 'closed' PR
-        closed_pr_date = dt.strptime(r2.json()[0]["closed_at"], "%Y-%m-%dT%H:%M:%S%z").date()
+        closed_pr_date = dt.strptime(
+            r2.json()[0]['closed_at'], "%Y-%m-%dT%H:%M:%S%z").date()
     except IndexError:
         # print(open_pr_date, closed_pr_date)
         return open_pr_date if closed_pr_date == "" else closed_pr_date
@@ -53,11 +59,38 @@ def get_last_pr_update(url):
 
 
 def get_last_commit_date(url):
-    pass
+    r = call_request(url)
+    print(dt.strptime(r.json()[0]['commit']['committer']['date'], "%Y-%m-%dT%H:%M:%S%z").date())
 
 
 def get_ghaction_circle(url):
-    pass
+    i = 0
+    r1 = call_request(url+'/actions/workflows')
+    r1.raise_for_status()
+    r2 = call_request(url+'/contents')
+    r2.raise_for_status()
+
+    try:
+        actions = r1.json().get('total_count', 0) > 0
+    except IndexError:
+        pass
+
+    try:
+        circle = any(item['name'] == '.circleci' for item in r2.json())
+    except IndexError:
+        pass
+
+    if actions and circle:
+        return 'Actions | Circle'
+
+    if actions:
+        return 'Actions'
+
+    if circle:
+        return 'Circle'
+
+    return 'None'
+
 
 
 def get_travis_build_failure_date(url):
@@ -65,19 +98,23 @@ def get_travis_build_failure_date(url):
 
 
 def get_github_api_data(url):
+    print(url)
     api_url = get_api_url(url)
     # No. of contributors:
     no_of_contributors = get_contributers_number(api_url)
-    print(no_of_contributors)
+    # print(no_of_contributors)
     # Last PR filed on
     last_pr_date = get_last_pr_update(api_url + "/pulls")
-    print(last_pr_date)
+    # print(last_pr_date)
     # last change applied  =>  ,
-    last_commit_on = get_last_commit_date(url)
+    last_commit_on = get_last_commit_date(api_url + "/commits")
+    # print(last_commit_on)
     # any sign of a Circle CI or GitHub Actions config file,
-    ghaction_circle = get_ghaction_circle(url)
+    ghaction_circle = get_ghaction_circle(api_url)
+    print(ghaction_circle)
     # Last time successful Travis build failed...
-    last_failed_travis_build = get_travis_build_failure_date(url)
+    last_failed_travis_build = get_travis_build_failure_date(api_url)
+    print(last_failed_travis_build)
     # write_row(no_of_contributors, last_pr_date, last_commit_on, ghaction_circle, last_failed_travis_build)
 
 
@@ -97,7 +134,8 @@ def main():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file("../credentials.json", SCOPES)
+            flow = InstalledAppFlow.from_client_secrets_file(
+                "./credentials.json", SCOPES)
             creds = flow.run_local_server(port=0)
         # Save the credentials for the next run
         with open("../token.pickle", "wb") as token:
@@ -125,7 +163,10 @@ def main():
                 get_github_api_data(row[3])
 
 
+parser = ap.ArgumentParser('Get details of github projects\n')
+parser.add_argument('--username', '-u', type=str, required=True, help='Github username')
+parser.add_argument('--token', '-t', type=str, required=True, help='Github generated token for API access (check github docs for api token)')
+username = parser.parse_args().username
+token = parser.parse_args().token
 if __name__ == "__main__":
-    arg_parser = ap.ArgumentParser()
-    token = arg_parser.add_argument
     main()
