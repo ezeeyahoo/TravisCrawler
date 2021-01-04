@@ -6,9 +6,11 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 import requests as rq
 from datetime import date, datetime as dt
-from json import decoder
 import argparse as ap
-# TODO : github api authentication for using github REST services.
+from xml.dom import minidom
+
+from requests.models import HTTPError
+
 
 # If modifying these scopes, delete the file token.pickle.
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
@@ -18,8 +20,9 @@ SAMPLE_SPREADSHEET_ID = "1ND3SnMHpbFYeNjvU9gDNIuCP3a2-Q_xzxbtyl18V_8s"
 SAMPLE_RANGE_NAME = "ubuntu2004!A2:P"
 
 
-def call_request(url):
+def call_request_github(url):
     return rq.get(url, auth=(username, token))
+
 
 def get_api_url(url):
     url_parts = url.split("/")
@@ -27,7 +30,7 @@ def get_api_url(url):
 
 
 def get_contributers_number(url):
-    r = call_request(url + "/contributors")
+    r = call_request_github(url + "/contributors")
     return len(r.json())
 
 
@@ -35,9 +38,9 @@ def get_last_pr_update(url):
     open_pr_date = date(1900, 1, 1)
     closed_pr_date = date(1900, 1, 1)
 
-    r1 = call_request(url)
+    r1 = call_request_github(url)
     r1.raise_for_status()
-    r2 = call_request(url + '?per_page=1&state=close')
+    r2 = call_request_github(url + '?per_page=1&state=close')
     r2.raise_for_status()
 
     try:
@@ -59,15 +62,15 @@ def get_last_pr_update(url):
 
 
 def get_last_commit_date(url):
-    r = call_request(url)
-    print(dt.strptime(r.json()[0]['commit']['committer']['date'], "%Y-%m-%dT%H:%M:%S%z").date())
+    r = call_request_github(url)
+    return dt.strptime(r.json()[0]['commit']['committer']['date'], "%Y-%m-%dT%H:%M:%S%z").date()
 
 
 def get_ghaction_circle(url):
     i = 0
-    r1 = call_request(url+'/actions/workflows')
+    r1 = call_request_github(url+'/actions/workflows')
     r1.raise_for_status()
-    r2 = call_request(url+'/contents')
+    r2 = call_request_github(url+'/contents')
     r2.raise_for_status()
 
     try:
@@ -92,13 +95,62 @@ def get_ghaction_circle(url):
     return 'None'
 
 
+def getText(nodelist):
+    rc = []
+    for node in nodelist:
+        if node.nodeType == node.TEXT_NODE:
+            rc.append(node.data)
+    return ''.join(rc)
+
+
+def is_travis_enabled(url):
+    r = call_request_github(url)
+    try:
+        travis = any(item['name'] == '.travis.yml' for item in r.json())
+    except IndexError:
+        pass
+    return travis
+
 
 def get_travis_build_failure_date(url):
-    pass
+    if not is_travis_enabled(url):
+        return False
+
+    r1 = rq.get(
+        'https://api.travis-ci.com/'+'/'.join(url.split('/')[3:6])+'/builds',
+        headers={"Accept": "application/atom+xml"}
+    )
+    r2 = rq.get(
+        'https://api.travis-ci.org/'+'/'.join(url.split('/')[3:6])+'/builds',
+        headers={"Accept": "application/atom+xml"}
+    )
+
+    try:
+        r1.raise_for_status()
+        r = r1
+    except HTTPError:
+        try:
+            r2.raise_for_status()
+            r = r2
+        except HTTPError:
+            return False
+
+    # r = ET.parse(r.text).getroot()
+    # print(r.text)
+    # exit(0)
+    # r = ET.fromstring(r.content)
+    feed = minidom.parseString(r.text)
+    entries = feed.getElementsByTagName("entry")
+    for entry in entries:
+        for summary in entry.getElementsByTagName('summary'):
+            summary_string = "%s" % getText(summary.childNodes)
+            if 'State: failed' in summary_string:
+                linebyline = [i.strip().strip('</p>')
+                              for i in summary_string.strip().split('\n')]
+                return linebyline[-2].lstrip('Finished at: ')
 
 
 def get_github_api_data(url):
-    print(url)
     api_url = get_api_url(url)
     # No. of contributors:
     no_of_contributors = get_contributers_number(api_url)
@@ -111,10 +163,11 @@ def get_github_api_data(url):
     # print(last_commit_on)
     # any sign of a Circle CI or GitHub Actions config file,
     ghaction_circle = get_ghaction_circle(api_url)
-    print(ghaction_circle)
+    # print(ghaction_circle)
     # Last time successful Travis build failed...
+    # print(api_url.split('/'))
     last_failed_travis_build = get_travis_build_failure_date(api_url)
-    print(last_failed_travis_build)
+    # print(last_failed_travis_build)
     # write_row(no_of_contributors, last_pr_date, last_commit_on, ghaction_circle, last_failed_travis_build)
 
 
@@ -164,8 +217,10 @@ def main():
 
 
 parser = ap.ArgumentParser('Get details of github projects\n')
-parser.add_argument('--username', '-u', type=str, required=True, help='Github username')
-parser.add_argument('--token', '-t', type=str, required=True, help='Github generated token for API access (check github docs for api token)')
+parser.add_argument('--username', '-u', type=str,
+                    required=True, help='Github username')
+parser.add_argument('--token', '-t', type=str, required=True,
+                    help='Github generated token for API access (check github docs for api token)')
 username = parser.parse_args().username
 token = parser.parse_args().token
 if __name__ == "__main__":
