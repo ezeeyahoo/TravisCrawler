@@ -8,9 +8,7 @@ import requests as rq
 from datetime import date, datetime as dt
 import argparse as ap
 from xml.dom import minidom
-from requests.api import request
 from requests.models import HTTPError
-import pprint
 
 
 # If modifying these scopes, delete the file token.pickle.
@@ -158,7 +156,7 @@ def get_travis_build_failure_date(url):
 
 
 def get_github_api_data(url):
-    api_url = get_api_url(url)
+    api_url = get_api_url(url.rstrip('/$'))
     no_of_contributors = get_contributers_number(api_url)
     last_pr_date = get_last_pr_update(api_url + "/pulls").isoformat()
     last_commit_on = get_last_commit_date(api_url + "/commits")
