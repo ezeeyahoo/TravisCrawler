@@ -5,10 +5,12 @@ from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 import requests as rq
-from datetime import date, datetime as dt
+import datetime as dt
+
 import argparse as ap
 from xml.dom import minidom
 from requests.models import HTTPError
+# import logging
 
 
 # If modifying these scopes, delete the file token.pickle.
@@ -19,19 +21,28 @@ SCOPES = ['https://www.googleapis.com/auth/spreadsheets',
 
 
 # The ID and range of a sample spreadsheet.
-SPREADSHEET_ID = "1ND3SnMHpbFYeNjvU9gDNIuCP3a2-Q_xzxbtyl18V_8s"
-READ_RANGE_NAME = "ubuntu2004!A2:P"
-WRITE_RANGE_NAME = "ubuntu2004!Q1:U"
+SPREADSHEET_ID = ""
+READ_RANGE_NAME = ""
+WRITE_RANGE_NAME = ""
 
 
 def call_request_github(url):
     return rq.get(url, auth=(username, token))
 
 
-def get_api_url(url):
-    url_parts = url.split("/")
-    return "https://api.github.com/repos/" + url_parts[-2] + "/" \
-                                           + url_parts[-1]
+def isURLvalid(url):
+    try:
+        r = call_request_github(url)
+        r.raise_for_status()
+    except HTTPError:
+        return False
+
+    return True
+
+
+def get_languages(url):
+    r = call_request_github(url+'/languages')
+    return ', '.join(list(r.json().keys())[:3])
 
 
 def get_contributers_number(url):
@@ -40,66 +51,81 @@ def get_contributers_number(url):
 
 
 def get_last_pr_update(url):
-    open_pr_date = date(1900, 1, 1)
-    closed_pr_date = date(1900, 1, 1)
-
-    r1 = call_request_github(url)
-    r1.raise_for_status()
-    r2 = call_request_github(url + "?per_page=1&state=close")
-    r2.raise_for_status()
+    open_pr_date = None
+    closed_pr_date = None
 
     try:
-        # 'open' PR
-        open_pr_date = dt.strptime(
-            r1.json()[0]["created_at"], "%Y-%m-%dT%H:%M:%S%z").date()
-    except IndexError:
-        pass
+        r1 = call_request_github(url)
+        r1.raise_for_status()
+        r2 = call_request_github(url + "?per_page=1&state=close")
+        r2.raise_for_status()
 
-    try:
+        try:
+            # 'open' PR
+            open_pr_date = dt.datetime.strptime(
+                r1.json()[0]["created_at"], "%Y-%m-%dT%H:%M:%S%z").date()
+        except IndexError:
+            pass
+
         # 'closed' PR
-        closed_pr_date = dt.strptime(
+        closed_pr_date = dt.datetime.strptime(
             r2.json()[0]['closed_at'], "%Y-%m-%dT%H:%M:%S%z").date()
     except IndexError:
-        return open_pr_date if closed_pr_date == "" else closed_pr_date
+        pass
     finally:
-        return open_pr_date if closed_pr_date < open_pr_date\
+        return open_pr_date if \
+            open_pr_date and \
+            (not closed_pr_date or closed_pr_date < open_pr_date) \
             else closed_pr_date
 
 
 def get_last_commit_date(url):
     r = call_request_github(url)
-    return dt.strptime(r.json()[0]['commit']['committer']['date'],
-                       "%Y-%m-%dT%H:%M:%S%z").date().isoformat()
+    try:
+        r.raise_for_status()
+        return dt.datetime.strptime(
+            r.json()[0]['commit']['committer']['date'],
+            "%Y-%m-%dT%H:%M:%S%z"
+        ).date().isoformat()
+    except HTTPError:
+        return '-'
 
 
 def get_ghaction_circle(url):
     actions = False
     circle = False
+    travis = False
     r1 = call_request_github(url+"/actions/workflows")
     r1.raise_for_status()
     r2 = call_request_github(url+"/contents")
     r2.raise_for_status()
-
+    # r3 = call_request_github(url+"/")
+    ret_str = []
     try:
         actions = r1.json().get('total_count', 0) > 0
     except IndexError:
         pass
+
+    if actions:
+        ret_str.append('Actions')
 
     try:
         circle = any(item['name'] == '.circleci' for item in r2.json())
     except IndexError:
         pass
 
-    if actions and circle:
-        return 'Actions | Circle'
-
-    if actions:
-        return 'Actions'
-
     if circle:
-        return 'Circle'
+        ret_str.append('Circle')
 
-    return 'None'
+    try:
+        travis = any(item['name'] == '.travis.yml' for item in r2.json())
+    except IndexError:
+        pass
+
+    if travis:
+        ret_str.append('Travis')
+
+    return '-'.join(ret_str) if ret_str else 'None'
 
 
 def getText(nodelist):
@@ -132,6 +158,7 @@ def get_travis_build_failure_date(url):
         'https://api.travis-ci.org/'+'/'.join(url.split('/')[3:6])+'/builds',
         headers={"Accept": "application/atom+xml"}
     )
+    print('https://api.travis-ci.org/'+'/'.join(url.split('/')[3:6])+'/builds')
 
     try:
         r1.raise_for_status()
@@ -143,6 +170,9 @@ def get_travis_build_failure_date(url):
         except HTTPError:
             return "NA"
 
+    # print(r.text)
+    # exit(1)
+    # return "NA"
     feed = minidom.parseString(r.text)
     entries = feed.getElementsByTagName("entry")
     for entry in entries:
@@ -156,15 +186,27 @@ def get_travis_build_failure_date(url):
 
 
 def get_github_api_data(url):
-    api_url = get_api_url(url.rstrip('/$'))
-    no_of_contributors = get_contributers_number(api_url)
-    last_pr_date = get_last_pr_update(api_url + "/pulls").isoformat()
-    last_commit_on = get_last_commit_date(api_url + "/commits")
-    ghaction_circle = get_ghaction_circle(api_url)
-    last_failed_travis_build = get_travis_build_failure_date(api_url)
+    url_blocks = url.split('.git')[0].rstrip('/$').split('#')[0].split("/")
+    if len(url_blocks) < 5:
+        return ['-', '-', '-', '-', '-']
+    api_url = '/'.join(['https:/', 'api.github.com', 'repos', url_blocks[-2],
+                        url_blocks[-1]])
+    if not isURLvalid(api_url):
+        return ['-', '-', '-', '-', '-']
+
+    last_pr_date = get_last_pr_update(api_url + "/pulls")
+    if isinstance(last_pr_date, dt.date):
+        last_pr_date = last_pr_date.isoformat()
+    else:
+        last_pr_date = '-'
+
     return [
-        no_of_contributors, last_pr_date, last_commit_on,
-        ghaction_circle, last_failed_travis_build
+        get_languages(api_url),
+        get_contributers_number(api_url),
+        last_pr_date,
+        get_last_commit_date(api_url + "/commits"),
+        get_ghaction_circle(api_url),
+        #    get_travis_build_failure_date(api_url)
     ]
 
 
@@ -201,8 +243,17 @@ def main():
     values = result.get("values", [])
 
     # write_data = []
-    write_data = [["No of Contributers", "Last PR updated", "Last commit",
-                   "GH actions and/or Circle CI", "Last Travis build failed"]]
+    write_data = [[
+        "Languages",
+        "No of Contributers",
+        "Last PR updated",
+        "Last commit",
+        "GH actions and/or Circle CI",
+        #               "Last Travis build failed"
+    ]]
+    body = {
+        "values": write_data
+    }
     if not values:
         print("No data found.")
     else:
@@ -213,7 +264,7 @@ def main():
             try:
                 if not row:
                     # raise IndexError
-                    write_data.append(["", "", "", "", ""])
+                    write_data.append(['-', '-', '-', '-', '-'])
                     continue
                 name = row[0]
                 url = row[3]
@@ -221,12 +272,12 @@ def main():
                     print(i, name, url)
                     write_data.append(get_github_api_data(url))
             except IndexError:
-                write_data.append(["", "", "", "", ""])
+                write_data.append(['-', '-', '-', '-', '-'])
                 continue
-
-        body = {
-            "values": write_data
-        }
+            except HTTPError:
+                print('***HTTP ERROR****')  # Logging
+                write_data.append(['-', '-', '-', '-', '-'])
+                continue
 
         response = sheet.values().append(
             spreadsheetId=SPREADSHEET_ID, range=WRITE_RANGE_NAME,
@@ -238,12 +289,33 @@ def main():
 
 
 parser = ap.ArgumentParser('Get details of github projects\n')
-parser.add_argument('--username', '-u', type=str,
-                    required=True, help='Github username')
+parser.add_argument('--username', '-u', type=str, required=True,
+                    help='Github username')
 parser.add_argument('--token', '-t', type=str, required=True,
-                    help='Github token for API (check github docs for API)'
-                    )
+                    help='Github token for API (check github docs for API)')
+parser.add_argument('--spreadsheet_id', '-sid', type=str, required=True,
+                    help='Spreadsheet id from Google docs')
+parser.add_argument('--read_sheet_name', '-rsheet', type=str, required=True,
+                    help='Sheet name in Spreadsheet to read from')
+parser.add_argument('--read_colrange', '-rrange', type=str, required=True,
+                    help='Read column range in sheet')
+parser.add_argument('--write_sheet_name', '-wsheet', type=str, required=False,
+                    help='Sheet name in Spreadsheet to write, default --read_sheet_name')
+parser.add_argument('--write_colrange', '-wrange', type=str, required=True,
+                    help='Write column range in sheet')
+
 username = parser.parse_args().username
 token = parser.parse_args().token
+sid = parser.parse_args().spreadsheet_id
+rsheet = parser.parse_args().read_sheet_name
+wsheet = parser.parse_args().write_sheet_name
+rrange = parser.parse_args().read_colrange
+wrange = parser.parse_args().write_colrange
+
+
+SPREADSHEET_ID = sid
+READ_RANGE_NAME = rsheet+'!'+rrange
+WRITE_RANGE_NAME = wsheet+'!'+wrange if wsheet else rsheet+'!'+wrange
+print()
 if __name__ == "__main__":
     main()
